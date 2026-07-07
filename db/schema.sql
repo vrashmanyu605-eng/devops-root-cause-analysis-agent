@@ -77,6 +77,21 @@ CREATE INDEX IF NOT EXISTS idx_mitigations_batch_id    ON mitigations (batch_id)
 CREATE INDEX IF NOT EXISTS idx_mitigations_priority    ON mitigations (priority);
 
 -- ---------------------------------------------------------------------------
+-- mitigation_feedback
+-- Stores user feedback and operational remarks for past mitigations.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS mitigation_feedback (
+    id              BIGSERIAL       PRIMARY KEY,
+    mitigation_id   BIGINT          NOT NULL UNIQUE REFERENCES mitigations (id) ON DELETE CASCADE,
+    feedback        TEXT,
+    remarks         TEXT,
+    created_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_mitigation_feedback_mitigation_id ON mitigation_feedback (mitigation_id);
+
+-- ---------------------------------------------------------------------------
 -- agent_runs
 -- Audit trail for every agent invocation: input/output summaries, timing, errors.
 -- ---------------------------------------------------------------------------

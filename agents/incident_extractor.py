@@ -24,6 +24,8 @@ import litellm
 from agents.state import AgentState
 from config import GEMINI_API_KEY, LITELLM_MODEL, LLM_TEMPERATURE, LLM_MAX_TOKENS
 from db.queries import insert_incident, log_agent_run
+from sentence_transformers import SentenceTransformer
+from db.embeddings import save_incident_embedding, build_incident_embedding_text
 
 # ── LiteLLM uses the GEMINI_API_KEY env var for Google models ────────────────
 os.environ.setdefault("GEMINI_API_KEY", GEMINI_API_KEY)
@@ -119,27 +121,27 @@ async def incident_extractor_node(state: AgentState) -> dict:
 
     # ── LLM call ─────────────────────────────────────────────────────────────
     try:
-        # response = await litellm.acompletion(
-        #     model=LITELLM_MODEL,
-        #     messages=[
-        #         {"role": "system", "content": _SYSTEM_PROMPT},
-        #         {"role": "user",   "content": prompt},
-        #     ],
-        #     temperature=LLM_TEMPERATURE,
-        #     max_tokens=LLM_MAX_TOKENS,
-        # )
-
         response = await litellm.acompletion(
-            model="openai/gemma-4-e2b",      # name can be almost anything
-            api_base="http://localhost:1234/v1",
-            api_key="lm-studio",                     # any non-empty string
+            model=LITELLM_MODEL,
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
+                {"role": "user",   "content": prompt},
             ],
             temperature=LLM_TEMPERATURE,
             max_tokens=LLM_MAX_TOKENS,
         )
+
+        # response = await litellm.acompletion(
+        #     model="openai/gemma-4-e2b",      # name can be almost anything
+        #     api_base="http://localhost:1234/v1",
+        #     api_key="lm-studio",                     # any non-empty string
+        #     messages=[
+        #         {"role": "system", "content": _SYSTEM_PROMPT},
+        #         {"role": "user", "content": prompt},
+        #     ],
+        #     temperature=LLM_TEMPERATURE,
+        #     max_tokens=LLM_MAX_TOKENS,
+        # )
         raw_text: str = response.choices[0].message.content or ""
     except Exception as exc:
         duration_ms = int((time.perf_counter() - t0) * 1000)
@@ -169,6 +171,9 @@ async def incident_extractor_node(state: AgentState) -> dict:
         inc["llm_raw_response"] = raw_text
         inc["raw_log_ids"]      = raw_log_ids
 
+    # ── Embed and persist ──────────────────────────────────────────────────
+    embedding_model = SentenceTransformer("BAAI/bge-base-en-v1.5")
+
     # ── Persist to DB ─────────────────────────────────────────────────────────
     incident_ids: list[int] = []
     for inc in incidents:
@@ -178,6 +183,23 @@ async def incident_extractor_node(state: AgentState) -> dict:
             incident_ids.append(db_id)
         except Exception as exc:
             print(f"[INCIDENT EXTRACTOR] DB insert error: {exc}")
+
+    for inc in incidents:
+        try:
+            embedding_text = build_incident_embedding_text(inc)
+
+            embedding = embedding_model.encode(
+                "passage: " + embedding_text,
+                normalize_embeddings=True
+            ).tolist()
+
+            await save_incident_embedding(
+                incident_id=inc["id"],
+                embedding=embedding,
+                embedded_text=embedding_text,
+            )
+        except Exception as e:
+            print(f"Failed to save embedding: {e}")
 
     duration_ms = int((time.perf_counter() - t0) * 1000)
     await log_agent_run(

@@ -14,6 +14,104 @@ from db.connection import get_pool
 
 
 # =============================================================================
+# similarity + feedback helpers
+# =============================================================================
+
+async def fetch_similar_incidents(query_embedding: list[float], limit: int = 3) -> list[dict[str, Any]]:
+    """Fetch previous incidents with similar attributes and any attached feedback."""
+    pool = await get_pool()
+
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT *
+                    FROM (
+                        SELECT
+                            i.id,
+                            i.incident_type,
+                            i.severity,
+                            i.root_cause,
+                            i.container,
+                            m.steps,
+                            m.prevention_note,
+                            mf.feedback,
+                            mf.remarks,
+                            ie.embedding <=> %s::vector AS distance
+                        FROM incident_embeddings ie
+                        JOIN incidents i
+                            ON i.id = ie.incident_id
+                        LEFT JOIN mitigations m
+                            ON m.incident_id = i.id
+                        LEFT JOIN mitigation_feedback mf
+                            ON mf.mitigation_id = m.id
+                    ) t
+                    WHERE distance < %s
+                    ORDER BY distance
+                    LIMIT %s;
+                """,
+                (
+                    query_embedding,
+                    0.4,
+                    limit,
+
+                ),
+            )
+            rows = await cur.fetchall()
+            print("OOOOOOOOOOOOOOOOOOOOOOOOOOOOO")
+            print(rows)
+
+    similar: list[dict[str, Any]] = []
+    for row in rows:
+        steps = row[5] if row[5] else []
+        steps_text = ""
+        if isinstance(steps, list):
+            steps_text = " | ".join(step.get("action", "") for step in steps if isinstance(step, dict))
+        elif isinstance(steps, str):
+            steps_text = steps
+        similar.append(
+            {
+                "incident_id": row[0],
+                "incident_type": row[1],
+                "severity": row[2],
+                "root_cause": row[3],
+                "container": row[4],
+                "mitigation_summary": steps_text or (row[6] or ""),
+                "feedback": row[7],
+                "remarks": row[8],
+                "distance": float(row[9]),
+            }
+        )
+    return similar
+
+
+async def save_mitigation_feedback(
+    mitigation_id: int,
+    feedback: str | None = None,
+    remarks: str | None = None,
+) -> None:
+    """Upsert user feedback and remarks for a mitigation."""
+    pool = await get_pool()
+
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO mitigation_feedback
+                    (mitigation_id, feedback, remarks)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (mitigation_id)
+                DO UPDATE SET
+                    feedback = EXCLUDED.feedback,
+                    remarks = EXCLUDED.remarks,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (mitigation_id, feedback, remarks),
+            )
+        await conn.commit()
+
+
+# =============================================================================
 # raw_logs
 # =============================================================================
 

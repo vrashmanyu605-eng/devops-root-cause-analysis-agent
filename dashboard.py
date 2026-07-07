@@ -236,9 +236,11 @@ def fetch_mitigation_detail(incident_id_str: str):
         with _get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT steps, commands, prevention_note, priority, "
-                    "estimated_resolution_time, requires_restart, llm_raw_response "
-                    "FROM mitigations WHERE incident_id = %s ORDER BY id DESC LIMIT 1",
+                    "SELECT m.id, m.steps, m.commands, m.prevention_note, m.priority, "
+                    "m.estimated_resolution_time, m.requires_restart, mf.feedback, mf.remarks "
+                    "FROM mitigations m "
+                    "LEFT JOIN mitigation_feedback mf ON mf.mitigation_id = m.id "
+                    "WHERE m.incident_id = %s ORDER BY m.id DESC LIMIT 1",
                     (incident_id,),
                 )
                 row = cur.fetchone()
@@ -246,7 +248,7 @@ def fetch_mitigation_detail(incident_id_str: str):
         if not row:
             return f"No mitigation found for incident ID `{incident_id}`."
 
-        steps, commands, prevention, priority, eta, restart, raw = row
+        mit_id, steps, commands, prevention, priority, eta, restart, feedback, remarks = row
         steps_parsed = steps if isinstance(steps, list) else json.loads(steps or "[]")
 
         lines = [
@@ -266,7 +268,40 @@ def fetch_mitigation_detail(incident_id_str: str):
         if prevention:
             lines += ["### 🛡️ Prevention", prevention]
 
+        if feedback or remarks:
+            lines += ["### 📝 Feedback & Remarks"]
+            if feedback:
+                lines.append(f"**Feedback:** {feedback}")
+            if remarks:
+                lines.append(f"**Remarks:** {remarks}")
+
         return "\n".join(lines)
+    except Exception as e:
+        return f"❌ Error: {e}"
+
+
+def save_feedback_for_mitigation(mitigation_id_str: str, feedback: str, remarks: str):
+    try:
+        mitigation_id = int(mitigation_id_str.strip())
+    except ValueError:
+        return "⚠️ Please enter a valid numeric Mitigation ID."
+
+    try:
+        with _get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO mitigation_feedback (mitigation_id, feedback, remarks)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (mitigation_id) DO UPDATE SET
+                        feedback = EXCLUDED.feedback,
+                        remarks = EXCLUDED.remarks,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (mitigation_id, feedback or None, remarks or None),
+                )
+                conn.commit()
+        return "✅ Feedback saved successfully."
     except Exception as e:
         return f"❌ Error: {e}"
 
@@ -404,6 +439,19 @@ with gr.Blocks(title="DevOps RCA Dashboard", theme=gr.themes.Soft()) as demo:
                 mit_detail_btn = gr.Button("Fetch Detail")
             mit_detail = gr.Markdown()
             mit_detail_btn.click(fn=fetch_mitigation_detail, inputs=[mit_inc_id], outputs=mit_detail)
+
+            gr.Markdown("#### Save Feedback for a Mitigation")
+            with gr.Row():
+                feedback_mit_id = gr.Textbox(label="Mitigation ID")
+                feedback_text = gr.Textbox(label="Feedback", lines=3)
+                remarks_text = gr.Textbox(label="Remarks", lines=3)
+            feedback_btn = gr.Button("Save Feedback")
+            feedback_status = gr.Markdown()
+            feedback_btn.click(
+                fn=save_feedback_for_mitigation,
+                inputs=[feedback_mit_id, feedback_text, remarks_text],
+                outputs=feedback_status,
+            )
 
         # ── Tab 4: Agent Runs ─────────────────────────────────────────────────
         with gr.TabItem("⚙️ Agent Runs"):
